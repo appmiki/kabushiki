@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="株式損益">
+<meta name="theme-color" content="#0a0e1a">
+<title>株式 損益カレンダー</title>
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+body { background: #0a0e1a; overscroll-behavior: none; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #1a1f35; }
+::-webkit-scrollbar-thumb { background: #3a4060; border-radius: 3px; }
+.day-cell:hover, .day-cell:active { background: #1e2540 !important; cursor: pointer; }
+.btn-nav:hover { background: #2a3050 !important; }
+.add-btn:active { background: #00c896 !important; color: #0a0e1a !important; }
+.toggle-btn { transition: all .2s; }
+.csv-btn:active { opacity: .7; }
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.75); display: flex; align-items: flex-end; justify-content: center; z-index: 100; padding-bottom: env(safe-area-inset-bottom); }
+.modal-card { background: #141828; border: 1px solid #2a3050; border-radius: 20px 20px 0 0; padding: 24px 20px; width: 100%; max-height: 90vh; overflow-y: auto; }
+input, .sel { width: 100%; background: #1a1f35; border: 1px solid #2a3050; border-radius: 8px; color: #e8eaf0; padding: 12px; font-size: 16px; outline: none; margin-top: 6px; font-family: inherit; }
+input:focus, .sel:focus { border-color: #00e5a0; }
+label { font-size: 12px; color: #8892b0; letter-spacing: .5px; display: block; }
+.trade-row { background: #1a1f35; border-radius: 10px; padding: 12px 14px; margin-bottom: 8px; }
+.action-btn { background: transparent; border-radius: 6px; padding: 6px 12px; cursor: pointer; font-size: 12px; transition: all .15s; }
+.edit-btn { border: 1px solid #5eb8ff33; color: #5eb8ff88; }
+.edit-btn:active { background: #5eb8ff22; border-color: #5eb8ff; color: #5eb8ff; }
+.del-btn { border: 1px solid #ff5e7d33; color: #ff5e7d88; }
+.del-btn:active { background: #ff5e7d22; border-color: #ff5e7d; color: #ff5e7d; }
+.save-btn { border: 1px solid #00e5a0; color: #00e5a0; background: #00e5a011; }
+.cancel-btn { border: 1px solid #2a3050; color: #8892b0; }
+@keyframes fadeup { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+.toast { animation: fadeup .25s ease; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useEffect, useRef } = React;
+const TAX_RATE = 0.20315;
+const afterTax = (pnl) => pnl > 0 ? Math.floor(pnl * (1 - TAX_RATE)) : pnl;
+const STORAGE_KEY = "stock-pnl-trades";
+let _id = Date.now();
+const newId = () => String(++_id);
+const MONTHS_JP = ["1月","2月","3月","4月","5月","6月","7月","8月","9月","10月","11月","12月"];
+const DAYS_JP = ["日","月","火","水","木","金","土"];
+function fmt(n) {
+  const abs = Math.abs(n).toLocaleString("ja-JP");
+  return (n >= 0 ? "+" : "−") + "¥" + abs;
+}
+function loadTrades() {
+  try { const r = localStorage.getItem(STORAGE_KEY); return r ? JSON.parse(r) : []; } catch { return []; }
+}
+function StockCalendar() {
+  const today = new Date();
+  const [currentYear, setCurrentYear] = useState(today.getFullYear());
+  const [currentMonth, setCurrentMonth] = useState(today.getMonth());
+  const [trades, setTrades] = useState(() => loadTrades());
+  const [showForm, setShowForm] = useState(false);
+  const [selectedDay, setSelectedDay] = useState(null);
+  const [form, setForm] = useState({ ticker: "", name: "", pnl: "" });
+  const [showAfterTax, setShowAfterTax] = useState(true);
+  const [detailDate, setDetailDate] = useState(null);
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState({ ticker: "", name: "", pnl: "" });
+  const [toast, setToast] = useState(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(trades)); } catch {}
+  }, [trades]);
+
+  function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
+
+  function deleteTrade(id) {
+    setTrades(prev => {
+      const next = prev.filter(t => t.id !== id);
+      if (next.filter(t => t.date === detailDate).length === 0) setDetailDate(null);
+      return next;
+    });
+  }
+  function startEdit(trade) { setEditingId(trade.id); setEditForm({ ticker: trade.ticker, name: trade.name, pnl: String(trade.pnl) }); }
+  function saveEdit() {
+    if (!editForm.pnl || isNaN(Number(editForm.pnl))) return;
+    setTrades(prev => prev.map(t => t.id === editingId ? { ...t, ...editForm, pnl: Number(editForm.pnl) } : t));
+    setEditingId(null); showToast("✅ 保存しました");
+  }
+  function exportCSV() {
+    const header = "日付,銘柄コード,銘柄名,損益(税引前),損益(税引後)\n";
+    const rows = [...trades].sort((a,b)=>a.date.localeCompare(b.date)).map(t=>`${t.date},${t.ticker},${t.name},${t.pnl},${afterTax(t.pnl)}`).join("\n");
+    const blob = new Blob(["\uFEFF"+header+rows],{type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download="株式損益.csv"; a.click(); URL.revokeObjectURL(url);
+    showToast("📥 CSVを書き出しました");
+  }
+  function importCSV(e) {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const lines = ev.target.result.replace(/^\uFEFF/,"").split("\n").filter(Boolean);
+      const imported = [];
+      for (const line of lines.slice(1)) {
+        const [date,ticker,name,pnl] = line.split(",");
+        if (!date||!pnl||isNaN(Number(pnl))) continue;
+        imported.push({id:newId(),date:date.trim(),ticker:(ticker||"").trim(),name:(name||"").trim(),pnl:Number(pnl)});
+      }
+      if (!imported.length) { showToast("⚠️ 読み込めるデータがありませんでした"); return; }
+      setTrades(prev => { const m=[...prev]; for(const i of imported) if(!m.find(t=>t.date===i.date&&t.ticker===i.ticker&&t.pnl===i.pnl)) m.push(i); return m; });
+      showToast(`📤 ${imported.length}件を読み込みました`);
+    };
+    reader.readAsText(file,"utf-8"); e.target.value="";
+  }
+  const tradesByDate = useMemo(()=>{ const m={}; for(const t of trades){if(!m[t.date])m[t.date]=[];m[t.date].push(t);} return m; },[trades]);
+  const pnlByDate = useMemo(()=>{ const m={}; for(const[d,ts]of Object.entries(tradesByDate)){const raw=ts.reduce((s,t)=>s+t.pnl,0);m[d]={raw,afterTax:afterTax(raw)};} return m; },[tradesByDate]);
+  const monthTotal = useMemo(()=>{ let raw=0; for(const[d,v]of Object.entries(pnlByDate)){const[y,m]=d.split("-").map(Number);if(y===currentYear&&m-1===currentMonth)raw+=v.raw;} return{raw,afterTax:afterTax(raw)}; },[pnlByDate,currentYear,currentMonth]);
+  const firstDay = new Date(currentYear,currentMonth,1).getDay();
+  const daysInMonth = new Date(currentYear,currentMonth+1,0).getDate();
+  function prevMonth(){if(currentMonth===0){setCurrentYear(y=>y-1);setCurrentMonth(11);}else setCurrentMonth(m=>m-1);}
+  function nextMonth(){if(currentMonth===11){setCurrentYear(y=>y+1);setCurrentMonth(0);}else setCurrentMonth(m=>m+1);}
+  function addTrade(){
+    if(!selectedDay||!form.pnl)return;
+    const d=`${currentYear}-${String(currentMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;
+    setTrades(prev=>[...prev,{id:newId(),date:d,ticker:form.ticker,name:form.name,pnl:Number(form.pnl)}]);
+    setForm({ticker:"",name:"",pnl:""});setShowForm(false);setSelectedDay(null);showToast("✅ 記録しました");
+  }
+  const cells=[]; for(let i=0;i<firstDay;i++)cells.push(null); for(let d=1;d<=daysInMonth;d++)cells.push(d);
+  const displayTotal=showAfterTax?monthTotal.afterTax:monthTotal.raw;
+  const detailTrades=detailDate?(tradesByDate[detailDate]||[]):[];
+  const detailPnlRaw=detailTrades.reduce((s,t)=>s+t.pnl,0);
+
+  return (
+    <div style={{minHeight:"100vh",background:"#0a0e1a",color:"#e8eaf0",fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",paddingBottom:"env(safe-area-inset-bottom)"}}>
+      {toast&&<div className="toast" style={{position:"fixed",bottom:40,left:"50%",transform:"translateX(-50%)",background:"#1e2540",border:"1px solid #2a3050",borderRadius:10,padding:"10px 20px",fontSize:13,zIndex:200,whiteSpace:"nowrap"}}>{toast}</div>}
+
+      {/* Header */}
+      <div style={{background:"#0f1322",padding:"16px 16px 12px",borderBottom:"1px solid #1e2540",position:"sticky",top:0,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10}}>
+          <div>
+            <div style={{fontFamily:"'Space Mono',monospace",fontSize:9,color:"#00e5a0",letterSpacing:2,textTransform:"uppercase"}}>Stock P&L</div>
+            <div style={{fontSize:18,fontWeight:700}}>株式 損益カレンダー</div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontSize:10,color:"#8892b0"}}>今月{showAfterTax&&<span style={{color:"#f5a623",marginLeft:4,fontSize:9}}>税引後</span>}</div>
+            <div style={{fontFamily:"'Space Mono',monospace",fontSize:20,fontWeight:700,color:displayTotal>=0?"#00e5a0":"#ff5e7d"}}>{fmt(displayTotal)}</div>
+            {showAfterTax&&monthTotal.raw!==monthTotal.afterTax&&<div style={{fontSize:10,color:"#5a6180"}}>税前:{fmt(monthTotal.raw)}</div>}
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <button className="btn-nav" onClick={prevMonth} style={{background:"#141828",border:"1px solid #2a3050",color:"#e8eaf0",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:18}}>‹</button>
+          <div style={{fontFamily:"'Space Mono',monospace",fontSize:16,fontWeight:700,flex:1,textAlign:"center"}}>{currentYear}年 {MONTHS_JP[currentMonth]}</div>
+          <button className="btn-nav" onClick={nextMonth} style={{background:"#141828",border:"1px solid #2a3050",color:"#e8eaf0",borderRadius:8,padding:"6px 14px",cursor:"pointer",fontSize:18}}>›</button>
+          <button className="toggle-btn" onClick={()=>setShowAfterTax(v=>!v)}
+            style={{background:showAfterTax?"#2a1f0a":"#141828",border:`1px solid ${showAfterTax?"#f5a623":"#2a3050"}`,color:showAfterTax?"#f5a623":"#8892b0",borderRadius:8,padding:"6px 10px",cursor:"pointer",fontSize:11,fontWeight:600}}>
+            {showAfterTax?"🏦税引後":"📊税引前"}
+          </button>
+        </div>
+      </div>
+
+      {/* Calendar */}
+      <div style={{padding:"12px 8px"}}>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",marginBottom:4}}>
+          {DAYS_JP.map((d,i)=>(
+            <div key={d} style={{textAlign:"center",fontSize:11,fontWeight:600,color:i===0?"#ff5e7d":i===6?"#5eb8ff":"#8892b0",padding:"4px 0"}}>{d}</div>
+          ))}
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2}}>
+          {cells.map((day,idx)=>{
+            if(!day)return<div key={"e"+idx}/>;
+            const dateStr=`${currentYear}-${String(currentMonth+1).padStart(2,"0")}-${String(day).padStart(2,"0")}`;
+            const pnlData=pnlByDate[dateStr];
+            const pnl=pnlData?(showAfterTax?pnlData.afterTax:pnlData.raw):undefined;
+            const dayTrades=tradesByDate[dateStr]||[];
+            const isToday=day===today.getDate()&&currentMonth===today.getMonth()&&currentYear===today.getFullYear();
+            const col=idx%7;
+            const textColor=col===0?"#ff5e7d99":col===6?"#5eb8ff99":"#8892b0";
+            return(
+              <div key={day} className="day-cell"
+                onClick={()=>dayTrades.length>0?setDetailDate(dateStr):(setSelectedDay(day),setShowForm(true))}
+                style={{minHeight:70,borderRadius:8,padding:"6px 4px",background:isToday?"#131d30":"#0f1322",border:`1px solid ${isToday?"#00e5a033":"#1e2540"}`,position:"relative"}}>
+                <div style={{fontSize:12,fontWeight:600,color:textColor,marginBottom:2,textAlign:"center"}}>{day}</div>
+                {pnl!==undefined&&<div style={{fontFamily:"'Space Mono',monospace",fontSize:9,fontWeight:700,color:pnl>=0?"#00e5a0":"#ff5e7d",textAlign:"center",lineHeight:1.3}}>{fmt(pnl)}</div>}
+                {dayTrades.slice(0,1).map((t,i)=>(
+                  <div key={i} style={{fontSize:8,color:"#5a6180",textAlign:"center",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",marginTop:2}}>{t.name||t.ticker}</div>
+                ))}
+                {dayTrades.length>1&&<div style={{fontSize:8,color:"#3a4060",textAlign:"center"}}>+{dayTrades.length-1}</div>}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Bottom buttons */}
+      <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"12px 16px",background:"#0a0e1a",borderTop:"1px solid #1e2540",display:"flex",gap:8,paddingBottom:"calc(12px + env(safe-area-inset-bottom))"}}>
+        <input ref={fileInputRef} type="file" accept=".csv" onChange={importCSV} style={{display:"none"}}/>
+        <button onClick={()=>fileInputRef.current.click()} style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:"#8892b0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:12}}>📤 CSV読込</button>
+        <button onClick={exportCSV} disabled={trades.length===0} style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:trades.length===0?"#3a4060":"#8892b0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:12}}>📥 CSV出力</button>
+        <button onClick={()=>{setSelectedDay(null);setShowForm(true);}} style={{flex:2,background:"#1a2f28",border:"1px solid #00e5a0",color:"#00e5a0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:13,fontWeight:700}}>＋ 取引を追加</button>
+      </div>
+
+      <div style={{height:80}}/>
+
+      {/* Detail modal */}
+      {detailDate&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDetailDate(null);setEditingId(null);}}}>
+          <div className="modal-card">
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
+              <div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#00e5a0",letterSpacing:2,marginBottom:4}}>DETAIL</div>
+                <div style={{fontSize:16,fontWeight:700}}>{detailDate.replace(/(\d+)-(\d+)-(\d+)/,(_,y,m,d)=>`${y}年${parseInt(m)}月${parseInt(d)}日`)}</div>
+              </div>
+              <button onClick={()=>{setDetailDate(null);setEditingId(null);}} style={{background:"transparent",border:"none",color:"#5a6180",fontSize:24,cursor:"pointer"}}>✕</button>
+            </div>
+            {detailTrades.map(t=>(
+              <div key={t.id} className="trade-row">
+                {editingId===t.id?(
+                  <div>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:8}}>
+                      <div><label>銘柄コード</label><input value={editForm.ticker} onChange={e=>setEditForm(f=>({...f,ticker:e.target.value}))} placeholder="7203"/></div>
+                      <div><label>銘柄名</label><input value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))} placeholder="トヨタ"/></div>
+                    </div>
+                    <div style={{marginBottom:10}}><label>損益（税引前・円）</label><input type="number" value={editForm.pnl} onChange={e=>setEditForm(f=>({...f,pnl:e.target.value}))}/></div>
+                    {editForm.pnl&&!isNaN(Number(editForm.pnl))&&Number(editForm.pnl)>0&&(
+                      <div style={{background:"#0f1322",borderRadius:6,padding:"6px 10px",marginBottom:10,fontSize:11,color:"#00e5a0"}}>
+                        税引後: {fmt(afterTax(Number(editForm.pnl)))} <span style={{color:"#5a6180",marginLeft:8}}>税額¥{Math.ceil(Number(editForm.pnl)*TAX_RATE).toLocaleString("ja-JP")}</span>
+                      </div>
+                    )}
+                    <div style={{display:"flex",gap:8}}>
+                      <button className="action-btn cancel-btn" onClick={()=>setEditingId(null)}>キャンセル</button>
+                      <button className="action-btn save-btn" onClick={saveEdit}>保存する</button>
+                    </div>
+                  </div>
+                ):(
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{t.name||"−"}{t.ticker&&<span style={{color:"#5a6180",fontSize:11,marginLeft:6}}>({t.ticker})</span>}</div>
+                      <div style={{fontFamily:"'Space Mono',monospace",fontSize:14,color:t.pnl>=0?"#00e5a0":"#ff5e7d",fontWeight:700}}>{showAfterTax?fmt(afterTax(t.pnl)):fmt(t.pnl)}</div>
+                      {showAfterTax&&t.pnl>0&&<div style={{fontSize:10,color:"#5a6180"}}>税引前 {fmt(t.pnl)}</div>}
+                    </div>
+                    <button className="action-btn edit-btn" onClick={()=>startEdit(t)}>編集</button>
+                    <button className="action-btn del-btn" onClick={()=>deleteTrade(t.id)}>削除</button>
+                  </div>
+                )}
+              </div>
+            ))}
+            {detailTrades.length>0&&(
+              <div style={{marginTop:12,borderTop:"1px solid #1e2540",paddingTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                <span style={{fontSize:12,color:"#8892b0"}}>合計</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontWeight:700,fontSize:16,color:detailPnlRaw>=0?"#00e5a0":"#ff5e7d"}}>{showAfterTax?fmt(afterTax(detailPnlRaw)):fmt(detailPnlRaw)}</span>
+              </div>
+            )}
+            <div style={{marginTop:12}}>
+              <button onClick={()=>{setDetailDate(null);setSelectedDay(parseInt(detailDate.split("-")[2]));setShowForm(true);}}
+                style={{width:"100%",background:"#1a2f28",border:"1px solid #00e5a0",color:"#00e5a0",borderRadius:10,padding:"12px",cursor:"pointer",fontSize:13,fontWeight:600}}>＋ この日に追加</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add trade modal */}
+      {showForm&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setShowForm(false);}}>
+          <div className="modal-card">
+            <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#00e5a0",letterSpacing:2,marginBottom:12}}>NEW TRADE</div>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:20}}>取引を記録</div>
+            <div style={{marginBottom:14}}>
+              <label>日付</label>
+              <select className="sel" value={selectedDay||""} onChange={e=>setSelectedDay(Number(e.target.value))}>
+                <option value="">日を選択</option>
+                {Array.from({length:daysInMonth},(_,i)=>i+1).map(d=><option key={d} value={d}>{currentYear}年{currentMonth+1}月{d}日</option>)}
+              </select>
+            </div>
+            <div style={{marginBottom:14}}><label>銘柄コード</label><input placeholder="例: 7203" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value}))}/></div>
+            <div style={{marginBottom:14}}><label>銘柄名</label><input placeholder="例: トヨタ" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></div>
+            <div style={{marginBottom:8}}><label>損益（税引前・円）</label><input type="number" placeholder="例: 12000（損失は -5000）" value={form.pnl} onChange={e=>setForm(f=>({...f,pnl:e.target.value}))}/></div>
+            {form.pnl&&!isNaN(Number(form.pnl))&&Number(form.pnl)>0&&(
+              <div style={{background:"#1a1f35",borderRadius:8,padding:"10px 12px",marginBottom:18,fontSize:12}}>
+                <div style={{color:"#8892b0",marginBottom:4}}>税引後の手取り</div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontWeight:700,color:"#00e5a0",fontSize:16}}>{fmt(afterTax(Number(form.pnl)))}</div>
+                <div style={{color:"#5a6180",fontSize:11,marginTop:2}}>税額: ¥{Math.ceil(Number(form.pnl)*TAX_RATE).toLocaleString("ja-JP")}</div>
+              </div>
+            )}
+            <div style={{display:"flex",gap:10,marginTop:8}}>
+              <button onClick={()=>setShowForm(false)} style={{flex:1,background:"transparent",border:"1px solid #2a3050",color:"#8892b0",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14}}>キャンセル</button>
+              <button onClick={addTrade} style={{flex:2,background:"#00e5a0",border:"none",color:"#0a0e1a",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14,fontWeight:700}}>記録する</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<StockCalendar/>);
+</script>
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>{
+    navigator.serviceWorker.register('sw.js').catch(()=>{});
+  });
+}
+</script>
+</body>
+</html>
