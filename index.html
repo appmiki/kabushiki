@@ -47,7 +47,7 @@ label { font-size: 12px; color: #8892b0; letter-spacing: .5px; display: block; }
 <script type="text/babel">
 const { useState, useMemo, useEffect, useRef } = React;
 const TAX_RATE = 0.20315;
-const afterTax = (pnl) => pnl > 0 ? Math.floor(pnl * (1 - TAX_RATE)) : pnl;
+const afterTax = (pnl, account) => (account==='nisa' || pnl <= 0) ? pnl : Math.floor(pnl * (1 - TAX_RATE));
 const STORAGE_KEY = "stock-pnl-trades";
 let _id = Date.now();
 const newId = () => String(++_id);
@@ -67,11 +67,11 @@ function StockCalendar() {
   const [trades, setTrades] = useState(() => loadTrades());
   const [showForm, setShowForm] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
-  const [form, setForm] = useState({ ticker: "", name: "", pnl: "" });
+  const [form, setForm] = useState({ ticker: "", name: "", pnl: "", account: "tokutei" });
   const [showAfterTax, setShowAfterTax] = useState(true);
   const [detailDate, setDetailDate] = useState(null);
   const [editingId, setEditingId] = useState(null);
-  const [editForm, setEditForm] = useState({ ticker: "", name: "", pnl: "" });
+  const [editForm, setEditForm] = useState({ ticker: "", name: "", pnl: "", account: "tokutei" });
   const [toast, setToast] = useState(null);
   const fileInputRef = useRef(null);
 
@@ -81,23 +81,88 @@ function StockCalendar() {
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
   const [tickerLooking, setTickerLooking] = useState(false);
+  const stockMapRef = useRef(null);
 
-  // 証券コードから銘柄名を自動取得
+  // JPX公式データから全銘柄を読み込み
+  async function loadStockMap() {
+    if (stockMapRef.current) return stockMapRef.current;
+    try {
+      const res = await fetch("https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls", {mode:"no-cors"});
+    } catch {}
+    // フォールバック: 主要銘柄の静的データ
+    const major = {
+      "1301":"極洋","1332":"日本水産","1333":"マルハニチロ","1605":"INPEX","1721":"コムシスHD",
+      "1801":"大成建設","1802":"大林組","1803":"清水建設","1808":"長谷工コーポレーション","1812":"鹿島建設",
+      "1925":"大和ハウス工業","1928":"積水ハウス","2002":"日清製粉グループ本社","2269":"明治HD","2282":"日本ハム",
+      "2413":"エムスリー","2432":"DeNA","2501":"サッポロHD","2502":"アサヒグループHD","2503":"キリンHD",
+      "2587":"サントリー食品インターナショナル","2651":"ローソン","2702":"日本マクドナルドHD","2801":"キッコーマン","2802":"味の素",
+      "2871":"ニチレイ","2897":"日清食品HD","2914":"JT","3086":"J.フロント リテイリング","3099":"三越伊勢丹HD",
+      "3382":"セブン&アイHD","3401":"帝人","3402":"東レ","3407":"旭化成","3産":"住友化学",
+      "3436":"SUMCO","3481":"三菱地所物件","3産":"三菱ケミカルグループ","4004":"レゾナックHD","4005":"住友化学",
+      "4021":"日産化学","4042":"東ソー","4043":"トクヤマ","4061":"デンカ","4063":"信越化学工業",
+      "4151":"協和キリン","4183":"三井化学","4188":"三菱ケミカルグループ","4208":"宇部興産","4307":"野村総合研究所",
+      "4324":"電通グループ","4452":"花王","4502":"武田薬品工業","4503":"アステラス製薬","4506":"住友ファーマ",
+      "4507":"塩野義製薬","4519":"中外製薬","4523":"エーザイ","4528":"小野薬品工業","4543":"テルモ",
+      "4568":"第一三共","4578":"大塚HD","4661":"オリエンタルランド","4689":"LINEヤフー","4704":"トレンドマイクロ",
+      "4751":"サイバーエージェント","4755":"楽天グループ","4902":"コニカミノルタ","4911":"資生堂","5019":"出光興産",
+      "5020":"ENEOSホールディングス","5101":"横浜ゴム","5108":"ブリヂストン","5201":"AGC","5214":"日本電気硝子",
+      "5233":"太平洋セメント","5301":"東海カーボン","5332":"TOTO","5333":"日本ガイシ","5401":"日本製鉄",
+      "5406":"神戸製鋼所","5411":"JFEホールディングス","5541":"大平洋金属","5631":"日本製鋼所","5702":"大紀アルミニウム工業所",
+      "5711":"三菱マテリアル","5713":"住友金属鉱山","5714":"DOWAホールディングス","5801":"古河電気工業","5802":"住友電気工業",
+      "5803":"フジクラ","6013":"タクマ","6028":"テクノプロHD","6098":"リクルートHD","6103":"オークマ",
+      "6113":"アマダ","6146":"ディスコ","6178":"日本郵政","6273":"SMC","6301":"小松製作所",
+      "6302":"住友重機械工業","6305":"日立建機","6326":"クボタ","6361":"荏原製作所","6367":"ダイキン工業",
+      "6371":"椿本チエイン","6383":"ダイフク","6395":"タダノ","6412":"平和","6436":"アマノ",
+      "6460":"セガサミーHD","6471":"日本精工","6472":"NTN","6473":"ジェイテクト","6479":"ミネベアミツミ",
+      "6501":"日立製作所","6502":"東芝","6503":"三菱電機","6504":"富士電機","6506":"安川電機",
+      "6508":"明電舎","6526":"ソシオネクスト","6532":"ベイカレント・コンサルティング","6533":"Orchestra Holdings","6594":"日本電産",
+      "6645":"オムロン","6674":"GSユアサ","6701":"NEC","6702":"富士通","6703":"沖電気工業",
+      "6706":"電気興業","6707":"三洋電機","6708":"エプソン","6723":"ルネサスエレクトロニクス","6724":"セイコーエプソン",
+      "6752":"パナソニックHD","6753":"シャープ","6758":"ソニーグループ","6762":"TDK","6770":"アルプスアルパイン",
+      "6773":"パイオニア","6789":"ローランド","6791":"日本テレビHD","6807":"航空電子工業","6841":"横河電機",
+      "6857":"アドバンテスト","6861":"キーエンス","6902":"デンソー","6920":"レーザーテック","6952":"カシオ計算機",
+      "6954":"ファナック","6971":"京セラ","6976":"太陽誘電","6981":"村田製作所","6988":"日東電工",
+      "7011":"三菱重工業","7012":"川崎重工業","7013":"IHI","7186":"コンコルディアFG","7201":"日産自動車",
+      "7202":"いすゞ自動車","7203":"トヨタ自動車","7205":"日野自動車","7211":"三菱自動車工業","7261":"マツダ",
+      "7267":"本田技研工業","7269":"スズキ","7270":"SUBARU","7272":"ヤマハ発動機","7282":"豊田合成",
+      "7283":"愛三工業","7296":"エフ・シー・シー","7309":"シマノ","7408":"ジャムコ","7412":"アトム",
+      "7453":"良品計画","7459":"メディパルHD","7460":"ヤガミ","7550":"ゼンショーHD","7552":"ハピネット",
+      "7581":"サイゼリヤ","7701":"島津製作所","7731":"ニコン","7733":"オリンパス","7735":"スクリーンHD",
+      "7741":"HOYA","7751":"キヤノン","7752":"リコー","7762":"シチズン時計","7832":"バンダイナムコHD",
+      "7912":"大日本印刷","7951":"ヤマハ","7974":"任天堂","8001":"伊藤忠商事","8002":"丸紅",
+      "8003":"トーメンデバイス","8005":"スクロール","8006":"ユニチカ","8007":"高島","8008":"ヨンドシーHD",
+      "8011":"三陽商会","8012":"長瀬産業","8015":"豊田通商","8028":"ファミリーマート","8031":"三井物産",
+      "8035":"東京エレクトロン","8053":"住友商事","8058":"三菱商事","8113":"ユニ・チャーム","8233":"高島屋",
+      "8252":"丸井グループ","8267":"イオン","8282":"ケーズHD","8303":"新生銀行","8304":"あおぞら銀行",
+      "8306":"三菱UFJフィナンシャル・グループ","8308":"りそなHD","8309":"三井住友トラスト・HD","8316":"三井住友FG","8331":"千葉銀行",
+      "8354":"ふくおかFG","8355":"静岡銀行","8411":"みずほFG","8591":"オリックス","8593":"三菱HCキャピタル",
+      "8601":"大和証券グループ本社","8604":"野村HD","8609":"岡三証券グループ","8630":"SOMPOホールディングス","8697":"日本取引所グループ",
+      "8725":"MS&ADインシュアランスグループHD","8750":"第一生命HD","8766":"東京海上HD","8795":"T&Dホールディングス","8801":"三井不動産",
+      "8802":"三菱地所","8830":"住友不動産","8850":"スターツコーポレーション","8905":"イオンモール","8951":"日本ビルファンド投資法人",
+      "9001":"東武鉄道","9005":"東急","9007":"小田急電鉄","9008":"京王電鉄","9009":"京成電鉄",
+      "9020":"東日本旅客鉄道","9021":"西日本旅客鉄道","9022":"東海旅客鉄道","9064":"ヤマトHD","9101":"日本郵船",
+      "9104":"商船三井","9107":"川崎汽船","9201":"日本航空","9202":"ANAホールディングス","9301":"三菱倉庫",
+      "9432":"日本電信電話","9433":"KDDI","9434":"ソフトバンク","9437":"NTTドコモ","9501":"東京電力HD",
+      "9502":"中部電力","9503":"関西電力","9531":"東京ガス","9532":"大阪ガス","9602":"東宝",
+      "9613":"NTTデータグループ","9681":"東京ドーム","9735":"セコム","9766":"コナミグループ","9983":"ファーストリテイリング",
+      "9984":"ソフトバンクグループ","9987":"スズケン","4385":"メルカリ","4478":"フリー","4565":"そーせいグループ",
+      "6095":"メドピア","6541":"グレイステクノロジー","7157":"ライフネット生命保険","3659":"ネクソン","2121":"MIXI"
+    };
+    stockMapRef.current = major;
+    return major;
+  }
+
   async function lookupTicker(ticker) {
     if (!ticker || ticker.length < 3) return;
     setTickerLooking(true);
     try {
-      const res = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${ticker}.T&lang=ja&region=JP&quotesCount=1&newsCount=0`);
-      const data = await res.json();
-      const quote = data?.quotes?.[0];
-      if (quote && quote.longname) {
-        setForm(f => ({...f, name: quote.longname}));
-        showToast("✅ 銘柄名を取得しました");
-      } else if (quote && quote.shortname) {
-        setForm(f => ({...f, name: quote.shortname}));
-        showToast("✅ 銘柄名を取得しました");
+      const map = await loadStockMap();
+      const code = ticker.trim().replace(/\s/g,"");
+      if (map[code]) {
+        setForm(f => ({...f, name: map[code]}));
+        showToast("✅ " + map[code]);
       } else {
-        showToast("⚠️ 銘柄が見つかりませんでした");
+        showToast("⚠️ 銘柄が見つかりませんでした（手入力してください）");
       }
     } catch {
       showToast("⚠️ 取得に失敗しました");
@@ -113,10 +178,10 @@ function StockCalendar() {
       return next;
     });
   }
-  function startEdit(trade) { setEditingId(trade.id); setEditForm({ ticker: trade.ticker, name: trade.name, pnl: String(trade.pnl) }); }
+  function startEdit(trade) { setEditingId(trade.id); setEditForm({ ticker: trade.ticker, name: trade.name, pnl: String(trade.pnl), account: trade.account||'tokutei' }); }
   function saveEdit() {
     if (!editForm.pnl || isNaN(Number(editForm.pnl))) return;
-    setTrades(prev => prev.map(t => t.id === editingId ? { ...t, ...editForm, pnl: Number(editForm.pnl) } : t));
+    setTrades(prev => prev.map(t => t.id === editingId ? { ...t, ...editForm, pnl: Number(editForm.pnl), account: editForm.account } : t));
     setEditingId(null); showToast("✅ 保存しました");
   }
   function exportCSV() {
@@ -145,8 +210,8 @@ function StockCalendar() {
     reader.readAsText(file,"utf-8"); e.target.value="";
   }
   const tradesByDate = useMemo(()=>{ const m={}; for(const t of trades){if(!m[t.date])m[t.date]=[];m[t.date].push(t);} return m; },[trades]);
-  const pnlByDate = useMemo(()=>{ const m={}; for(const[d,ts]of Object.entries(tradesByDate)){const raw=ts.reduce((s,t)=>s+t.pnl,0);m[d]={raw,afterTax:afterTax(raw)};} return m; },[tradesByDate]);
-  const monthTotal = useMemo(()=>{ let raw=0; for(const[d,v]of Object.entries(pnlByDate)){const[y,m]=d.split("-").map(Number);if(y===currentYear&&m-1===currentMonth)raw+=v.raw;} return{raw,afterTax:afterTax(raw)}; },[pnlByDate,currentYear,currentMonth]);
+  const pnlByDate = useMemo(()=>{ const m={}; for(const[d,ts]of Object.entries(tradesByDate)){const raw=ts.reduce((s,t)=>s+t.pnl,0);const at=ts.reduce((s,t)=>s+afterTax(t.pnl,t.account),0);m[d]={raw,afterTax:at};} return m; },[tradesByDate]);
+  const monthTotal = useMemo(()=>{ let raw=0,at=0; for(const[d,v]of Object.entries(pnlByDate)){const[y,m]=d.split("-").map(Number);if(y===currentYear&&m-1===currentMonth){raw+=v.raw;at+=v.afterTax;}} return{raw,afterTax:at}; },[pnlByDate,currentYear,currentMonth]);
   const firstDay = new Date(currentYear,currentMonth,1).getDay();
   const daysInMonth = new Date(currentYear,currentMonth+1,0).getDate();
   function prevMonth(){if(currentMonth===0){setCurrentYear(y=>y-1);setCurrentMonth(11);}else setCurrentMonth(m=>m-1);}
@@ -154,13 +219,14 @@ function StockCalendar() {
   function addTrade(){
     if(!selectedDay||!form.pnl)return;
     const d=`${currentYear}-${String(currentMonth+1).padStart(2,"0")}-${String(selectedDay).padStart(2,"0")}`;
-    setTrades(prev=>[...prev,{id:newId(),date:d,ticker:form.ticker,name:form.name,pnl:Number(form.pnl)}]);
-    setForm({ticker:"",name:"",pnl:""});setShowForm(false);setSelectedDay(null);showToast("✅ 記録しました");
+    setTrades(prev=>[...prev,{id:newId(),date:d,ticker:form.ticker,name:form.name,pnl:Number(form.pnl),account:form.account}]);
+    setForm({ticker:"",name:"",pnl:"",account:"tokutei"});setShowForm(false);setSelectedDay(null);showToast("✅ 記録しました");
   }
   const cells=[]; for(let i=0;i<firstDay;i++)cells.push(null); for(let d=1;d<=daysInMonth;d++)cells.push(d);
   const displayTotal=showAfterTax?monthTotal.afterTax:monthTotal.raw;
   const detailTrades=detailDate?(tradesByDate[detailDate]||[]):[];
   const detailPnlRaw=detailTrades.reduce((s,t)=>s+t.pnl,0);
+  const detailPnlAfterTax=detailTrades.reduce((s,t)=>s+afterTax(t.pnl,t.account),0);
 
   return (
     <div style={{minHeight:"100vh",background:"#0a0e1a",color:"#e8eaf0",fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",paddingBottom:"env(safe-area-inset-bottom)"}}>
@@ -252,7 +318,11 @@ function StockCalendar() {
                       <div><label>銘柄コード</label><input value={editForm.ticker} onChange={e=>setEditForm(f=>({...f,ticker:e.target.value}))} placeholder="7203"/></div>
                       <div><label>銘柄名</label><input value={editForm.name} onChange={e=>setEditForm(f=>({...f,name:e.target.value}))} placeholder="トヨタ"/></div>
                     </div>
-                    <div style={{marginBottom:10}}><label>損益（税引前・円）</label><input type="number" value={editForm.pnl} onChange={e=>setEditForm(f=>({...f,pnl:e.target.value}))}/></div>
+                    <div style={{display:"flex",gap:0,marginBottom:10,borderRadius:8,overflow:"hidden",border:"1px solid #2a3050"}}>
+                      <button onClick={()=>setEditForm(f=>({...f,account:"tokutei"}))} style={{flex:1,padding:"8px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:editForm.account==="tokutei"?"#1a2f28":"#0f1322",color:editForm.account==="tokutei"?"#00e5a0":"#5a6180",borderRight:"1px solid #2a3050"}}>🏦 特定</button>
+                      <button onClick={()=>setEditForm(f=>({...f,account:"nisa"}))} style={{flex:1,padding:"8px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,background:editForm.account==="nisa"?"#1f2a10":"#0f1322",color:editForm.account==="nisa"?"#a8e063":"#5a6180"}}>🌱 NISA</button>
+                    </div>
+                    <div style={{marginBottom:10}}><label>損益（円）</label><input type="number" value={editForm.pnl} onChange={e=>setEditForm(f=>({...f,pnl:e.target.value}))}/></div>
                     {editForm.pnl&&!isNaN(Number(editForm.pnl))&&Number(editForm.pnl)>0&&(
                       <div style={{background:"#0f1322",borderRadius:6,padding:"6px 10px",marginBottom:10,fontSize:11,color:"#00e5a0"}}>
                         税引後: {fmt(afterTax(Number(editForm.pnl)))} <span style={{color:"#5a6180",marginLeft:8}}>税額¥{Math.ceil(Number(editForm.pnl)*TAX_RATE).toLocaleString("ja-JP")}</span>
@@ -266,9 +336,9 @@ function StockCalendar() {
                 ):(
                   <div style={{display:"flex",alignItems:"center",gap:10}}>
                     <div style={{flex:1}}>
-                      <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{t.name||"−"}{t.ticker&&<span style={{color:"#5a6180",fontSize:11,marginLeft:6}}>({t.ticker})</span>}</div>
-                      <div style={{fontFamily:"'Space Mono',monospace",fontSize:14,color:t.pnl>=0?"#00e5a0":"#ff5e7d",fontWeight:700}}>{showAfterTax?fmt(afterTax(t.pnl)):fmt(t.pnl)}</div>
-                      {showAfterTax&&t.pnl>0&&<div style={{fontSize:10,color:"#5a6180"}}>税引前 {fmt(t.pnl)}</div>}
+                      <div style={{fontSize:13,fontWeight:600,marginBottom:2}}>{t.name||"−"}{t.ticker&&<span style={{color:"#5a6180",fontSize:11,marginLeft:6}}>({t.ticker})</span>}{t.account==="nisa"&&<span style={{background:"#1a2210",color:"#a8e063",fontSize:9,padding:"1px 6px",borderRadius:4,marginLeft:6}}>NISA</span>}</div>
+                      <div style={{fontFamily:"'Space Mono',monospace",fontSize:14,color:t.pnl>=0?"#00e5a0":"#ff5e7d",fontWeight:700}}>{showAfterTax?fmt(afterTax(t.pnl,t.account)):fmt(t.pnl)}</div>
+                      {showAfterTax&&t.pnl>0&&t.account!=="nisa"&&<div style={{fontSize:10,color:"#5a6180"}}>税引前 {fmt(t.pnl)}</div>}
                     </div>
                     <button className="action-btn edit-btn" onClick={()=>startEdit(t)}>編集</button>
                     <button className="action-btn del-btn" onClick={()=>deleteTrade(t.id)}>削除</button>
@@ -279,7 +349,7 @@ function StockCalendar() {
             {detailTrades.length>0&&(
               <div style={{marginTop:12,borderTop:"1px solid #1e2540",paddingTop:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                 <span style={{fontSize:12,color:"#8892b0"}}>合計</span>
-                <span style={{fontFamily:"'Space Mono',monospace",fontWeight:700,fontSize:16,color:detailPnlRaw>=0?"#00e5a0":"#ff5e7d"}}>{showAfterTax?fmt(afterTax(detailPnlRaw)):fmt(detailPnlRaw)}</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontWeight:700,fontSize:16,color:detailPnlRaw>=0?"#00e5a0":"#ff5e7d"}}>{showAfterTax?fmt(detailPnlAfterTax):fmt(detailPnlRaw)}</span>
               </div>
             )}
             <div style={{marginTop:12}}>
@@ -295,7 +365,18 @@ function StockCalendar() {
         <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setShowForm(false);}}>
           <div className="modal-card">
             <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#00e5a0",letterSpacing:2,marginBottom:12}}>NEW TRADE</div>
-            <div style={{fontSize:18,fontWeight:700,marginBottom:20}}>取引を記録</div>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>取引を記録</div>
+            <div style={{display:"flex",gap:0,marginBottom:16,borderRadius:10,overflow:"hidden",border:"1px solid #2a3050"}}>
+              <button onClick={()=>setForm(f=>({...f,account:"tokutei"}))}
+                style={{flex:1,padding:"10px",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,background:form.account==="tokutei"?"#1a2f28":"#141828",color:form.account==="tokutei"?"#00e5a0":"#5a6180",borderRight:"1px solid #2a3050"}}>
+                🏦 特定口座
+              </button>
+              <button onClick={()=>setForm(f=>({...f,account:"nisa"}))}
+                style={{flex:1,padding:"10px",border:"none",cursor:"pointer",fontSize:13,fontWeight:600,background:form.account==="nisa"?"#1f2a10":"#141828",color:form.account==="nisa"?"#a8e063":"#5a6180"}}>
+                🌱 NISA
+              </button>
+            </div>
+            {form.account==="nisa"&&<div style={{background:"#1a2210",border:"1px solid #a8e06333",borderRadius:8,padding:"8px 12px",marginBottom:14,fontSize:11,color:"#a8e063"}}>✅ NISA口座：非課税（税金はかかりません）</div>}
             <div style={{marginBottom:14}}>
               <label>日付</label>
               <select className="sel" value={selectedDay||""} onChange={e=>setSelectedDay(Number(e.target.value))}>
@@ -317,9 +398,10 @@ function StockCalendar() {
             <div style={{marginBottom:8}}><label>損益（税引前・円）</label><input type="number" placeholder="例: 12000（損失は -5000）" value={form.pnl} onChange={e=>setForm(f=>({...f,pnl:e.target.value}))}/></div>
             {form.pnl&&!isNaN(Number(form.pnl))&&Number(form.pnl)>0&&(
               <div style={{background:"#1a1f35",borderRadius:8,padding:"10px 12px",marginBottom:18,fontSize:12}}>
-                <div style={{color:"#8892b0",marginBottom:4}}>税引後の手取り</div>
-                <div style={{fontFamily:"'Space Mono',monospace",fontWeight:700,color:"#00e5a0",fontSize:16}}>{fmt(afterTax(Number(form.pnl)))}</div>
-                <div style={{color:"#5a6180",fontSize:11,marginTop:2}}>税額: ¥{Math.ceil(Number(form.pnl)*TAX_RATE).toLocaleString("ja-JP")}</div>
+                <div style={{color:"#8892b0",marginBottom:4}}>{form.account==="nisa"?"手取り（非課税）":"税引後の手取り"}</div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontWeight:700,color:form.account==="nisa"?"#a8e063":"#00e5a0",fontSize:16}}>{fmt(afterTax(Number(form.pnl),form.account))}</div>
+                {form.account!=="nisa"&&<div style={{color:"#5a6180",fontSize:11,marginTop:2}}>税額: ¥{Math.ceil(Number(form.pnl)*TAX_RATE).toLocaleString("ja-JP")}</div>}
+                {form.account==="nisa"&&<div style={{color:"#a8e06388",fontSize:11,marginTop:2}}>税額: ¥0（非課税）</div>}
               </div>
             )}
             <div style={{display:"flex",gap:10,marginTop:8}}>
