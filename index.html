@@ -80,6 +80,31 @@ function StockCalendar() {
   }, [trades]);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
+  const [tickerLooking, setTickerLooking] = useState(false);
+
+  // 証券コードから銘柄名を自動取得
+  async function lookupTicker(ticker) {
+    if (!ticker || ticker.length < 3) return;
+    setTickerLooking(true);
+    try {
+      const res = await fetch(`https://query1.finance.yahoo.com/v1/finance/search?q=${ticker}.T&lang=ja&region=JP&quotesCount=1&newsCount=0`);
+      const data = await res.json();
+      const quote = data?.quotes?.[0];
+      if (quote && quote.longname) {
+        setForm(f => ({...f, name: quote.longname}));
+        showToast("✅ 銘柄名を取得しました");
+      } else if (quote && quote.shortname) {
+        setForm(f => ({...f, name: quote.shortname}));
+        showToast("✅ 銘柄名を取得しました");
+      } else {
+        showToast("⚠️ 銘柄が見つかりませんでした");
+      }
+    } catch {
+      showToast("⚠️ 取得に失敗しました");
+    } finally {
+      setTickerLooking(false);
+    }
+  }
 
   function deleteTrade(id) {
     setTrades(prev => {
@@ -278,7 +303,16 @@ function StockCalendar() {
                 {Array.from({length:daysInMonth},(_,i)=>i+1).map(d=><option key={d} value={d}>{currentYear}年{currentMonth+1}月{d}日</option>)}
               </select>
             </div>
-            <div style={{marginBottom:14}}><label>銘柄コード</label><input placeholder="例: 7203" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value}))}/></div>
+            <div style={{marginBottom:14}}>
+              <label>銘柄コード</label>
+              <div style={{display:"flex",gap:8,marginTop:6}}>
+                <input style={{flex:1,marginTop:0}} placeholder="例: 7203" value={form.ticker} onChange={e=>setForm(f=>({...f,ticker:e.target.value}))} onBlur={e=>{if(e.target.value.length>=4)lookupTicker(e.target.value)}}/>
+                <button onClick={()=>lookupTicker(form.ticker)} disabled={tickerLooking||form.ticker.length<3}
+                  style={{background:tickerLooking?"#1a1f35":"#1a2f28",border:`1px solid ${tickerLooking?"#2a3050":"#00e5a0"}`,color:tickerLooking?"#5a6180":"#00e5a0",borderRadius:8,padding:"0 12px",cursor:"pointer",fontSize:12,fontWeight:600,whiteSpace:"nowrap",flexShrink:0}}>
+                  {tickerLooking?"検索中...":"🔍 検索"}
+                </button>
+              </div>
+            </div>
             <div style={{marginBottom:14}}><label>銘柄名</label><input placeholder="例: トヨタ" value={form.name} onChange={e=>setForm(f=>({...f,name:e.target.value}))}/></div>
             <div style={{marginBottom:8}}><label>損益（税引前・円）</label><input type="number" placeholder="例: 12000（損失は -5000）" value={form.pnl} onChange={e=>setForm(f=>({...f,pnl:e.target.value}))}/></div>
             {form.pnl&&!isNaN(Number(form.pnl))&&Number(form.pnl)>0&&(
