@@ -48,8 +48,13 @@ const { useState, useMemo, useEffect, useRef } = React;
 
 const TAX_RATE = 0.20315;
 const STORAGE_KEY = "stock-pnl-trades";
+const WISHLIST_KEY = "stock-pnl-wishlist-v2"; // 月別管理
 let _id = Date.now();
 const newId = () => String(++_id);
+
+function loadWishlistAll() {
+  try { const r = localStorage.getItem(WISHLIST_KEY); return r ? JSON.parse(r) : {}; } catch { return {}; }
+}
 
 // 取引単体の税引後（表示用）
 const calcAfterTax = (pnl, account, offset) => {
@@ -86,9 +91,14 @@ const STOCK_MAP = {"1301":"極洋","1332":"日本水産","1333":"マルハニチ
 
 function StockCalendar() {
   const today = new Date();
+  const [activeTab, setActiveTab] = useState('calendar'); // 'calendar' | 'wishlist'
   const [currentYear, setCurrentYear] = useState(today.getFullYear());
   const [currentMonth, setCurrentMonth] = useState(today.getMonth());
   const [trades, setTrades] = useState(() => loadTrades());
+  const [wishlistAll, setWishlistAll] = useState(() => loadWishlistAll()); // {"2026-07": [...]}
+  const [showWishForm, setShowWishForm] = useState(false);
+  const [editingWishId, setEditingWishId] = useState(null);
+  const [wishForm, setWishForm] = useState({ name: "", price: "" });
   const [showForm, setShowForm] = useState(false);
   const [selectedDay, setSelectedDay] = useState(null);
   const [form, setForm] = useState({ ticker: "", name: "", pnl: "", account: "tokutei", offset: false });
@@ -99,10 +109,15 @@ function StockCalendar() {
   const [toast, setToast] = useState(null);
   const [tickerLooking, setTickerLooking] = useState(false);
   const fileInputRef = useRef(null);
+  const wishFileRef = useRef(null);
 
   useEffect(() => {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(trades)); } catch {}
   }, [trades]);
+
+  useEffect(() => {
+    try { localStorage.setItem(WISHLIST_KEY, JSON.stringify(wishlistAll)); } catch {}
+  }, [wishlistAll]);
 
   function showToast(msg) { setToast(msg); setTimeout(() => setToast(null), 2500); }
 
@@ -174,6 +189,48 @@ function StockCalendar() {
         return merged;
       });
       showToast(`📤 ${imported.length}件を読み込みました`);
+    };
+    reader.readAsText(file, "utf-8"); e.target.value = "";
+  }
+
+  // ウィッシュリストCSV書き出し
+  function exportWishlistCSV() {
+    const header = "月,名前,金額,手動チェック,対象外,繰越済み\n";
+    const rows = wishlist.map(w =>
+      `${monthKey},${w.name},${w.price},${w.manualCheck?"yes":"no"},${w.excluded?"yes":"no"},${w.carriedOver?"yes":"no"}`
+    ).join("\n");
+    const blob = new Blob(["\uFEFF" + header + rows], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=`ウィッシュリスト_${monthKey}.csv`; a.click(); URL.revokeObjectURL(url);
+    showToast("📥 ウィッシュリストを書き出しました");
+  }
+
+  // ウィッシュリストCSV読み込み
+  function importWishlistCSV(e) {
+    const file = e.target.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const lines = ev.target.result.replace(/^\uFEFF/,"").split("\n").filter(Boolean);
+      const imported = [];
+      for (const line of lines.slice(1)) {
+        const parts = line.split(",");
+        if (parts.length < 3) continue;
+        const [month, name, price, manualCheck, excluded, carriedOver] = parts;
+        if (!name || !price || isNaN(Number(price))) continue;
+        imported.push({
+          id: newId(), name: name.trim(), price: Number(price),
+          manualCheck: manualCheck==="yes", excluded: excluded==="yes", carriedOver: carriedOver==="yes"
+        });
+      }
+      if (!imported.length) { showToast("⚠️ 読み込めるデータがありませんでした"); return; }
+      setWishlist(prev => {
+        const merged = [...prev];
+        for (const imp of imported) {
+          if (!merged.find(w => w.name===imp.name && w.price===imp.price)) merged.push(imp);
+        }
+        return merged;
+      });
+      showToast(`✅ ${imported.length}件を読み込みました`);
     };
     reader.readAsText(file, "utf-8"); e.target.value = "";
   }
@@ -261,7 +318,19 @@ function StockCalendar() {
   }, [trades, currentYear, currentMonth]);
 
   // 年合計（損益通算）
-  const yearTotalRaw = useMemo(() => trades.filter(t=>t.date.startsWith(String(currentYear))).reduce((s,t)=>s+t.pnl,0), [trades, currentYear]);
+  // 現在表示月のキー
+  const monthKey = `${currentYear}-${String(currentMonth+1).padStart(2,"0")}`;
+  // 現在月のウィッシュリスト（なければ空配列）
+  const wishlist = wishlistAll[monthKey] || [];
+  const setWishlist = (updater) => {
+    setWishlistAll(prev => {
+      const cur = prev[monthKey] || [];
+      const next = typeof updater === 'function' ? updater(cur) : updater;
+      return {...prev, [monthKey]: next};
+    });
+  };
+
+    const yearTotalRaw = useMemo(() => trades.filter(t=>t.date.startsWith(String(currentYear))).reduce((s,t)=>s+t.pnl,0), [trades, currentYear]);
   const yearTotalAfterTax = useMemo(() => netAfterTax(trades.filter(t=>t.date.startsWith(String(currentYear)))), [trades, currentYear]);
 
   function prevMonth() { if(currentMonth===0){setCurrentYear(y=>y-1);setCurrentMonth(11);}else setCurrentMonth(m=>m-1); }
@@ -273,6 +342,125 @@ function StockCalendar() {
   const detailPnlRaw = detailTrades.reduce((s,t)=>s+t.pnl,0);
   const detailPnlAt = detailTrades.reduce((s,t)=>s+calcAfterTax(t.pnl,t.account,t.offset),0);
   const daysInSelectedMonth = new Date(currentYear, currentMonth+1, 0).getDate();
+
+  // ウィッシュリスト：優先順位（リストの並び順）で上から順に今月の利益を割り当てる（対象外・繰越済みは除外）
+  const wishlistWithStatus = useMemo(() => {
+    const monthProfit = monthTotal.afterTax;
+    let remaining = monthProfit > 0 ? monthProfit : 0;
+    const statusMap = {};
+    for (const w of wishlist) {
+      if (w.excluded || w.carriedOver) {
+        statusMap[w.id] = { affordable: false, remainingNeeded: 0, remainingAfter: remaining };
+        continue;
+      }
+      if (w.manualCheck) {
+        statusMap[w.id] = { affordable: true, remainingNeeded: 0, remainingAfter: remaining };
+        continue;
+      }
+      if (remaining >= w.price) {
+        statusMap[w.id] = { affordable: true, remainingNeeded: 0, remainingAfter: remaining - w.price };
+        remaining -= w.price;
+      } else {
+        statusMap[w.id] = { affordable: false, remainingNeeded: w.price - remaining, remainingAfter: remaining };
+      }
+    }
+    return wishlist.map(w => ({...w, ...statusMap[w.id]}));
+  }, [wishlist, monthTotal.afterTax]);
+
+  // 全項目達成後に残る利益（対象外・繰越済みは除く）
+  const remainingProfitAfterAll = useMemo(() => {
+    let remaining = monthTotal.afterTax > 0 ? monthTotal.afterTax : 0;
+    for (const w of wishlist) {
+      if (w.excluded || w.manualCheck || w.carriedOver) continue;
+      if (remaining >= w.price) remaining -= w.price;
+    }
+    return remaining;
+  }, [wishlist, monthTotal.afterTax]);
+
+  function moveWishUp(id) {
+    setWishlist(prev => {
+      const idx = prev.findIndex(w=>w.id===id);
+      if (idx <= 0) return prev;
+      const next = [...prev];
+      [next[idx-1], next[idx]] = [next[idx], next[idx-1]];
+      return next;
+    });
+  }
+
+  function moveWishDown(id) {
+    setWishlist(prev => {
+      const idx = prev.findIndex(w=>w.id===id);
+      if (idx === -1 || idx >= prev.length-1) return prev;
+      const next = [...prev];
+      [next[idx+1], next[idx]] = [next[idx], next[idx+1]];
+      return next;
+    });
+  }
+
+  function toggleExcluded(id) {
+    setWishlist(prev => prev.map(w => w.id===id ? {...w, excluded: !w.excluded, manualCheck: w.excluded ? w.manualCheck : false} : w));
+  }
+
+  // 翌月へ繰り越し：対象月をその項目に付け替える（リスト自体は通年共有なので、繰越は「今月分は諦めて来月扱いにする」=チェックを全部リセットして次月に注目を移すイメージ）
+  function carryOverToNextMonth(id) {
+    const item = wishlist.find(w => w.id === id);
+    if (!item) return;
+    // 元月: carriedOver=trueでグレーアウト
+    setWishlist(prev => prev.map(w => w.id===id ? {...w, carriedOver: true} : w));
+    // 翌月: 新IDで独立エントリを追加（状態はリセット）
+    const nextMonthKey = currentMonth === 11
+      ? `${currentYear+1}-01`
+      : `${currentYear}-${String(currentMonth+2).padStart(2,"0")}`;
+    setWishlistAll(prev => {
+      const nextList = prev[nextMonthKey] || [];
+      const newItem = {id: newId(), name: item.name, price: item.price, manualCheck: false, excluded: false, carriedOver: false};
+      return {...prev, [nextMonthKey]: [...nextList, newItem]};
+    });
+    showToast("📅 来月に繰り越しました");
+  }
+
+  function addWish() {
+    if (!wishForm.name || !wishForm.price) return;
+    setWishlist(prev => [...prev, {id:newId(), name:wishForm.name, price:Number(wishForm.price), manualCheck:false, excluded:false}]);
+    setWishForm({name:"", price:""});
+    setShowWishForm(false);
+    showToast("✅ リストに追加しました");
+  }
+
+  function startEditWish(w) {
+    setEditingWishId(w.id);
+    setWishForm({name:w.name, price:String(w.price)});
+  }
+
+  function saveEditWish() {
+    if (!wishForm.name || !wishForm.price) return;
+    setWishlist(prev => prev.map(w => w.id===editingWishId ? {...w, name:wishForm.name, price:Number(wishForm.price)} : w));
+    setEditingWishId(null);
+    setWishForm({name:"", price:""});
+    showToast("✅ 更新しました");
+  }
+
+  function deleteWish(id) {
+    setWishlist(prev => prev.filter(w => w.id !== id));
+  }
+
+  function toggleManualCheck(id) {
+    setWishlist(prev => prev.map(w => w.id===id ? {...w, manualCheck: !w.manualCheck} : w));
+  }
+
+  // 税引後金額から、必要な税引前金額を逆算（特定口座課税想定）
+  function requiredPreTax(afterTaxAmount) {
+    return Math.ceil(afterTaxAmount / (1 - TAX_RATE));
+  }
+
+  // ウィッシュリスト全体の合計金額と、それを賄うのに必要な税引前利益
+  const wishlistTotalPrice = useMemo(() => wishlist.filter(w=>!w.excluded&&!w.carriedOver).reduce((s,w)=>s+w.price,0), [wishlist]);
+  const wishlistTotalRequiredPreTax = useMemo(() => requiredPreTax(wishlistTotalPrice), [wishlistTotalPrice]);
+  // 全体合計に対して、今月の利益(税引前)であといくら必要か
+  const wishlistTotalRemainingPreTax = useMemo(() => {
+    const needed = wishlistTotalRequiredPreTax - (monthTotal.raw > 0 ? monthTotal.raw : 0);
+    return needed > 0 ? needed : 0;
+  }, [wishlistTotalRequiredPreTax, monthTotal.raw]);
 
   return (
     <div style={{minHeight:"100vh",background:"#0a0e1a",color:"#e8eaf0",fontFamily:"'Noto Sans JP','Hiragino Sans',sans-serif",paddingBottom:"env(safe-area-inset-bottom)"}}>
@@ -309,6 +497,20 @@ function StockCalendar() {
         </div>
       </div>
 
+      {/* タブ切り替え */}
+      <div style={{display:"flex",padding:"0 16px",gap:8,marginTop:12}}>
+        <button onClick={()=>setActiveTab('calendar')}
+          style={{flex:1,padding:"10px",borderRadius:10,border:`1px solid ${activeTab==='calendar'?"#00e5a0":"#2a3050"}`,background:activeTab==='calendar'?"#1a2f28":"#141828",color:activeTab==='calendar'?"#00e5a0":"#5a6180",fontSize:13,fontWeight:600,cursor:"pointer"}}>
+          📅 カレンダー
+        </button>
+        <button onClick={()=>setActiveTab('wishlist')}
+          style={{flex:1,padding:"10px",borderRadius:10,border:`1px solid ${activeTab==='wishlist'?"#f5a623":"#2a3050"}`,background:activeTab==='wishlist'?"#2a1f0a":"#141828",color:activeTab==='wishlist'?"#f5a623":"#5a6180",fontSize:13,fontWeight:600,cursor:"pointer"}}>
+          🎁 ウィッシュリスト
+        </button>
+      </div>
+
+      {activeTab==='calendar' && (
+      <>
       {/* カレンダー */}
       <div style={{padding:"12px 8px"}}>
         {/* 曜日ヘッダー */}
@@ -362,16 +564,140 @@ function StockCalendar() {
           })}
         </div>
       </div>
+      </>
+      )}
+
+      {activeTab==='wishlist' && (
+        <div style={{padding:"16px"}}>
+          {wishlist.length>0&&(
+            <div style={{background:"#141828",border:"1px solid #2a3050",borderRadius:12,padding:"14px 16px",marginBottom:16}}>
+              <div style={{fontSize:11,color:"#8892b0",marginBottom:4}}>達成済みを引いた残り（税引後）</div>
+              <div style={{fontFamily:"'Space Mono',monospace",fontSize:22,fontWeight:700,color:remainingProfitAfterAll>=0?"#00e5a0":"#ff5e7d"}}>{fmt(remainingProfitAfterAll)}</div>
+            </div>
+          )}
+
+          {wishlist.length>0&&(
+            <div style={{background:"#1a1410",border:"1px solid #f5a62333",borderRadius:12,padding:"14px 16px",marginBottom:16}}>
+              <div style={{fontSize:11,color:"#f5a623",marginBottom:8,fontWeight:600}}>🎯 リスト全体を達成するには</div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:11,color:"#8892b0"}}>合計金額（株の利益から）</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontSize:14,fontWeight:700,color:"#e8eaf0"}}>¥{wishlistTotalPrice.toLocaleString("ja-JP")}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:11,color:"#5a6180"}}>対象外含む全合計</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontSize:13,fontWeight:700,color:"#5a6180"}}>¥{wishlist.reduce((s,w)=>s+w.price,0).toLocaleString("ja-JP")}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <span style={{fontSize:11,color:"#8892b0"}}>必要な税引前利益</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontSize:14,fontWeight:700,color:"#f5a623"}}>¥{wishlistTotalRequiredPreTax.toLocaleString("ja-JP")}</span>
+              </div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:6,borderTop:"1px solid #f5a62322"}}>
+                <span style={{fontSize:11,color:"#8892b0"}}>今月の利益(税引前)で見た残り</span>
+                <span style={{fontFamily:"'Space Mono',monospace",fontSize:14,fontWeight:700,color:wishlistTotalRemainingPreTax>0?"#ff5e7d":"#00e5a0"}}>
+                  {wishlistTotalRemainingPreTax>0?`あと¥${wishlistTotalRemainingPreTax.toLocaleString("ja-JP")}`:"達成済み✓"}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {wishlist.length>0&&(
+            <div style={{fontSize:10,color:"#5a6180",marginBottom:12,paddingLeft:4}}>▲▼で優先順位を入れ替え／丸をタップで手動チェック（買い終わったらON）</div>
+          )}
+
+          {wishlistWithStatus.length===0 ? (
+            <div style={{textAlign:"center",padding:"40px 0",color:"#3a4060",fontSize:13}}>
+              まだ何も登録されていません<br/>「＋ 追加」から欲しいものを登録しましょう
+            </div>
+          ) : (
+            wishlistWithStatus.map((w,idx)=>(
+              <div key={w.id} style={{background:w.carriedOver?"#111218":w.excluded?"#0f1117":w.manualCheck?"#0d1a2e":w.affordable?"#0f1f17":"#141828",border:`1px solid ${w.carriedOver?"#1e2030":w.excluded?"#2a3050":w.manualCheck?"#5eb8ff44":w.affordable?"#00e5a044":"#2a3050"}`,borderRadius:12,padding:"14px 16px",marginBottom:10,opacity:(w.excluded||w.carriedOver)?0.5:1}}>
+                {editingWishId===w.id ? (
+                  <div>
+                    <div style={{marginBottom:10}}><label>名前</label><input value={wishForm.name} onChange={e=>setWishForm(f=>({...f,name:e.target.value}))} placeholder="例: 新しいカメラ"/></div>
+                    <div style={{marginBottom:10}}><label>金額（円）</label><input type="number" value={wishForm.price} onChange={e=>setWishForm(f=>({...f,price:e.target.value}))} placeholder="例: 80000"/></div>
+                    <div style={{display:"flex",gap:8}}>
+                      <button className="action-btn cancel-btn" onClick={()=>{setEditingWishId(null);setWishForm({name:"",price:""});}}>キャンセル</button>
+                      <button className="action-btn save-btn" onClick={saveEditWish}>保存する</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+                      <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:2,flexShrink:0,paddingTop:2}}>
+                        <button type="button" onClick={(e)=>{e.stopPropagation();moveWishUp(w.id);}} disabled={idx===0}
+                          style={{background:"#1a1f35",border:"1px solid #2a3050",borderRadius:4,width:22,height:18,color:idx===0?"#2a3050":"#8892b0",cursor:idx===0?"default":"pointer",fontSize:10,padding:0,lineHeight:1}}>▲</button>
+                        <span style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#5a6180"}}>{idx+1}</span>
+                        <button type="button" onClick={(e)=>{e.stopPropagation();moveWishDown(w.id);}} disabled={idx===wishlistWithStatus.length-1}
+                          style={{background:"#1a1f35",border:"1px solid #2a3050",borderRadius:4,width:22,height:18,color:idx===wishlistWithStatus.length-1?"#2a3050":"#8892b0",cursor:idx===wishlistWithStatus.length-1?"default":"pointer",fontSize:10,padding:0,lineHeight:1}}>▼</button>
+                      </div>
+                      <button type="button" onClick={(e)=>{e.stopPropagation();toggleManualCheck(w.id);}} disabled={w.excluded||w.carriedOver}
+                        style={{width:28,height:28,borderRadius:14,border:`2px solid ${w.excluded?"#2a3050":w.manualCheck?"#5eb8ff":w.affordable?"#00e5a0":"#3a4060"}`,background:w.excluded?"transparent":w.manualCheck?"#5eb8ff":w.affordable?"#00e5a0":"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,cursor:(w.excluded||w.carriedOver)?"default":"pointer",marginTop:2}}>
+                        {!w.excluded&&(w.manualCheck||w.affordable) && <span style={{color:"#0a0e1a",fontSize:16,fontWeight:700}}>✓</span>}
+                      </button>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:14,fontWeight:600,color:w.carriedOver?"#5a6180":w.excluded?"#5a6180":w.manualCheck?"#5eb8ff":w.affordable?"#e8eaf0":"#8892b0"}}>{w.name}</div>
+                        <div style={{fontFamily:"'Space Mono',monospace",fontSize:13,color:w.carriedOver?"#5a6180":w.excluded?"#5a6180":w.affordable?"#00e5a0":"#5a6180",fontWeight:700}}>¥{w.price.toLocaleString("ja-JP")}</div>
+                        {!w.excluded&&!w.carriedOver&&<div style={{fontSize:9,color:"#5a6180",marginTop:2}}>税引前で約 ¥{requiredPreTax(w.price).toLocaleString("ja-JP")} の利益が必要</div>}
+                        {w.carriedOver ? (
+                          <div style={{fontSize:10,color:"#5a6180",marginTop:2}}>➡ 翌月へ繰り越し済み</div>
+                        ) : w.excluded ? (
+                          <div style={{fontSize:10,color:"#5a6180",marginTop:2}}>⏸ 対象外（株の利益以外で賄う予定）</div>
+                        ) : w.manualCheck ? (
+                          <div style={{fontSize:10,color:"#5eb8ff88",marginTop:2}}>✓ 手動でチェック済み（購入済み）</div>
+                        ) : w.affordable ? (
+                          <div style={{fontSize:10,color:"#00e5a088",marginTop:2}}>✓ 今月の利益で賄えました！</div>
+                        ) : (
+                          <div style={{fontSize:10,color:"#f5a623",marginTop:2}}>あと ¥{w.remainingNeeded.toLocaleString("ja-JP")}（税引後）／ 税引前で約¥{requiredPreTax(w.remainingNeeded).toLocaleString("ja-JP")} 必要</div>
+                        )}
+                      </div>
+                      <div style={{display:"flex",flexDirection:"column",gap:4}}>
+                        <button className="action-btn edit-btn" onClick={()=>startEditWish(w)}>編集</button>
+                        <button className="action-btn del-btn" onClick={()=>deleteWish(w.id)}>削除</button>
+                      </div>
+                    </div>
+                    {!w.carriedOver&&<div style={{display:"flex",gap:6,marginTop:8,paddingTop:8,borderTop:"1px solid #1e254044"}}>
+                      <button type="button" onClick={()=>toggleExcluded(w.id)}
+                        style={{flex:1,background:w.excluded?"#1a1f35":"transparent",border:`1px solid ${w.excluded?"#5a6180":"#3a405066"}`,color:w.excluded?"#8892b0":"#5a6180",borderRadius:6,padding:"6px 8px",cursor:"pointer",fontSize:11}}>
+                        {w.excluded?"↩ 対象に戻す":"⏸ 対象外にする（株の利益以外で賄う）"}
+                      </button>
+                      {!w.affordable&&!w.excluded&&!w.manualCheck&&(
+                        <button type="button" onClick={()=>carryOverToNextMonth(w.id)}
+                          style={{flex:1,background:"transparent",border:"1px solid #5eb8ff44",color:"#5eb8ff88",borderRadius:6,padding:"6px 8px",cursor:"pointer",fontSize:11}}>
+                          ➡ 翌月へ繰越
+                        </button>
+                      )}
+                    </div>}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
 
       <div style={{height:80}}/>
 
       {/* ボトムボタン */}
+      {activeTab==='calendar' ? (
       <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"12px 16px",background:"#0a0e1a",borderTop:"1px solid #1e2540",display:"flex",gap:8,paddingBottom:"calc(12px + env(safe-area-inset-bottom))"}}>
         <input ref={fileInputRef} type="file" accept=".csv" onChange={importCSV} style={{display:"none"}}/>
         <button onClick={()=>fileInputRef.current.click()} style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:"#8892b0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:12}}>📤 CSV読込</button>
         <button onClick={exportCSV} disabled={trades.length===0} style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:trades.length===0?"#3a4060":"#8892b0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:12}}>📥 CSV出力</button>
         <button onClick={()=>{setSelectedDay(null);setShowForm(true);}} style={{flex:2,background:"#1a2f28",border:"1px solid #00e5a0",color:"#00e5a0",borderRadius:10,padding:"10px",cursor:"pointer",fontSize:13,fontWeight:700}}>＋ 取引を追加</button>
       </div>
+      ) : (
+      <div style={{position:"fixed",bottom:0,left:0,right:0,padding:"12px 16px",background:"#0a0e1a",borderTop:"1px solid #1e2540",paddingBottom:"calc(12px + env(safe-area-inset-bottom))"}}>
+        <div style={{display:"flex",gap:8,marginBottom:8}}>
+          <button onClick={exportWishlistCSV} disabled={wishlist.length===0}
+            style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:wishlist.length===0?"#3a4060":"#8892b0",borderRadius:8,padding:"8px",cursor:"pointer",fontSize:11}}>📥 ウィッシュCSV出力</button>
+          <button onClick={()=>wishFileRef.current.click()}
+            style={{flex:1,background:"#141828",border:"1px solid #2a3050",color:"#8892b0",borderRadius:8,padding:"8px",cursor:"pointer",fontSize:11}}>📤 ウィッシュCSV読込</button>
+        </div>
+        <input ref={wishFileRef} type="file" accept=".csv" onChange={importWishlistCSV} style={{display:"none"}}/>
+        <button onClick={()=>{setWishForm({name:"",price:""});setShowWishForm(true);}}
+          style={{width:"100%",background:"#2a1f0a",border:"1px solid #f5a623",color:"#f5a623",borderRadius:10,padding:"12px",cursor:"pointer",fontSize:14,fontWeight:700}}>＋ 欲しいものを追加</button>
+      </div>
+      )}
 
       {/* 詳細モーダル */}
       {detailDate&&(
@@ -527,6 +853,34 @@ function StockCalendar() {
             <div style={{display:"flex",gap:10}}>
               <button onClick={()=>setShowForm(false)} style={{flex:1,background:"transparent",border:"1px solid #2a3050",color:"#8892b0",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14}}>キャンセル</button>
               <button onClick={addTrade} style={{flex:2,background:"#00e5a0",border:"none",color:"#0a0e1a",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14,fontWeight:700}}>記録する</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ウィッシュリスト追加モーダル */}
+      {showWishForm&&(
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setShowWishForm(false);}}>
+          <div className="modal-card">
+            <div style={{fontFamily:"'Space Mono',monospace",fontSize:10,color:"#f5a623",letterSpacing:2,marginBottom:12}}>NEW WISH</div>
+            <div style={{fontSize:18,fontWeight:700,marginBottom:16}}>欲しいものを追加</div>
+            <div style={{marginBottom:12}}>
+              <label>名前</label>
+              <input value={wishForm.name} onChange={e=>setWishForm(f=>({...f,name:e.target.value}))} placeholder="例: 新しいカメラ"/>
+            </div>
+            <div style={{marginBottom:8}}>
+              <label>金額（円・税引後の手取りベース）</label>
+              <input type="number" value={wishForm.price} onChange={e=>setWishForm(f=>({...f,price:e.target.value}))} placeholder="例: 80000"/>
+            </div>
+            {wishForm.price&&!isNaN(Number(wishForm.price))&&Number(wishForm.price)>0&&(
+              <div style={{background:"#1a1f35",borderRadius:8,padding:"10px 12px",marginBottom:16,fontSize:12}}>
+                <div style={{color:"#8892b0",marginBottom:4}}>これを賄うのに必要な税引前の利益</div>
+                <div style={{fontFamily:"'Space Mono',monospace",fontWeight:700,color:"#f5a623",fontSize:16}}>約 ¥{requiredPreTax(Number(wishForm.price)).toLocaleString("ja-JP")}</div>
+              </div>
+            )}
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>{setShowWishForm(false);setWishForm({name:"",price:""});}} style={{flex:1,background:"transparent",border:"1px solid #2a3050",color:"#8892b0",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14}}>キャンセル</button>
+              <button onClick={addWish} style={{flex:2,background:"#f5a623",border:"none",color:"#0a0e1a",borderRadius:10,padding:"14px",cursor:"pointer",fontSize:14,fontWeight:700}}>追加する</button>
             </div>
           </div>
         </div>
